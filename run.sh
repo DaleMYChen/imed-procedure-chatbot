@@ -20,7 +20,7 @@ fi
 # Activate venv
 source venv/bin/activate
 
-# 3. Install Requirements
+# 3. Install Requirements in venv
 echo "Installing dependencies..."
 pip install -r requirements.txt
 

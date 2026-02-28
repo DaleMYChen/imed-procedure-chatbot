@@ -39,9 +39,9 @@ Kind regards,
 I-MED Accounts Receivable Team
 ```
 
-Topics of costs and Medicare rebates can lead to personally identifiable information shared in the subsequent conversation. In the medical service domain we can not expose the chatbot LLM to these PII information due to privacy concerns and policies. The chatbot is instructed to direct such inquiries to human staff. 
+Topics of costs and Medicare rebates can lead to personally identifiable information shared in the subsequent conversation. In the medical service domain we can not expose the chatbot LLM to these PII information due to privacy concerns and policies. A possible situation can be the chatbot asking the patient for his Medicare number or medical history to determine eligibility of a service. The current implementation has no secure data handling infrastructure: no authentication or encrypted storage. 
 
-Data available to the chatbot is limited to the general information on services & procedures. 
+Therefore the chatbot is instructed to direct such inquiries to human staff. Data available to the chatbot is limited to the general information on services & procedures. 
 
 ---
 
@@ -51,7 +51,7 @@ Data available to the chatbot is limited to the general information on services 
     "url": "https://i-med.com.au/find-a-radiology-clinic",
     "raw_text": "Our network of radiology clinics\nPostcode or suburb Procedure",
 ```
-The "Find a Clinic" page is just an empty form waiting for user input, in order to load relevant information. No static information to scrap.  
+The "Find a Clinic" page is just an empty form waiting for user input, in order to load relevant information. No static information on postcode or suburb to scrap.  
 
 ---
 
@@ -138,6 +138,8 @@ As the largest network of radiology clinics in Australia, we offer a comprehensi
 ```
 "question": "Am I eligible for a lung screening if i am 48? If i have a history of kidney disease, how shall i prepare for Angiography? What is a gamma camera in Nuclear medicine?"
 ```
+Note: Nuclear medicine procedure page is not one of the scrapped pages.
+
 Response:
 ```
 {
@@ -165,7 +167,7 @@ Refer to query 3 and the corresponding response in Q1: the same top-3 chunks wer
 
 Behaviour: The LLM repeated the 'out-of-scope' response 3 times, meaning that it recognised the query had 3 distinct sub-questions and structured its response with 3 corresponding parts. But the chatbot avoided answering any part of the query even though the first 2 parts were relevant and had chunks already retrieved.
 
-The root cause lies in prompt building: all three sub-questions were passed as a single string sharing one context block, with no instruction to process and reason over each independently. 
+The root cause lies in prompt building: all three sub-questions were passed as a single string sharing one context block, with no instruction to process and reason each one independently. 
 
 Relevant code is in `llm._build_prompt()`:
 ```
@@ -178,7 +180,9 @@ return f"""...
     Answer:"""
 ```
 
-When the LLM encountered one unanswerable sub-question (gamma camera from a page not scraped), it applied its fallback instruction globally and returned "no information" for all three parts despite having sufficient context for the other parts. A production fix would decompose compound queries into individual questions before retrieval, and run separate RAG passes. It will ensure each sub-question gets its own context budget and independent LLM reasoning.
+When the LLM encountered one unanswerable sub-question (gamma camera from a page not scraped), it applied its fallback instruction globally and returned "no information" for all three parts despite having sufficient context for the other parts. 
+
+A production fix would decompose compound queries into individual questions before retrieval, and run separate RAG passes. It will ensure each sub-question gets its own context budget and independent LLM reasoning.
 
 ---
 
@@ -188,7 +192,7 @@ When the LLM encountered one unanswerable sub-question (gamma camera from a page
 
 Gap: data exists, but scrapper can't access. 
 
-A patient might ask for the nearest I-MED clinic to his suburb and the contact number. But he would not be able to obtain an answer because the current implementation of the scrapper only has access to statis contents. In `/find-a-radiology-clinic` he will have to input the location for the content to be loaded. 
+A patient might ask for the nearest I-MED clinic to his suburb and the contact number. But he would not be able to obtain an answer because the current implementation of the scrapper only has access to statis contents. In `/find-a-radiology-clinic` he will have to input the location for the relevant information to be loaded. 
 
 2. Asking for scan results. 
 
@@ -196,9 +200,9 @@ Gap: data does not exist on website.
 
 A patient asking for details of a recent scan will not receive relevant information from the chatbot, because personally identifiable information of the patients is not accessible by the chatbot. The chatbot will instead direct the patient to contact the internal staff for his records. 
 
-3. Scan details. 
+3. Scan preparation instructions. 
 
-Gap: data exists but the chatbot is not flexible on the language style of query. 
+Gap: data exists but the chatbot is not flexible with the language style of query. 
 
 A patient asking for the details of scan preparation may receive a passive response depending how he phrases the question: 
 ```
@@ -206,7 +210,7 @@ A patient asking for the details of scan preparation may receive a passive respo
 "answer": "I don't have enough information about that in the I-MED procedure content. Please instead submit an enquiry at https://i-med.com.au/contact-us",
 "section": "What is angiography?"
 ```
-The question tone was casual and the chatbot used an incorrect section. 
+The question tone was casual and the chatbot based the response on an incorrect section. 
 
 If the question involved keyword 'prepare', the chatbot would identify the correct section and output an informative response:
 ```
@@ -218,7 +222,6 @@ If the question involved keyword 'prepare', the chatbot would identify the corre
 ---
 
 ### Q4. 
-Q4: The CT scan page on i-med.com.au has separate preparation instructions for brain CT, chest CT, and abdomen/pelvis CT. Paste the chunks your system produces for this page. Are the three prep types in the same chunk or separate chunks? What does your chatbot return for the query: ‘Do I need to fast before a chest CT scan?’
 
 All 3 prep types fell under the same chunk (Chunk 1), because the chunking strategy placed the entire body text in a single chunk. 
 
@@ -277,3 +280,6 @@ The chatbot response was actually correct. Llama was able to find the relevant i
 }
 ```
 
+However if the question is more subtle, this rigid chunking strategy will leave the entire interpretation workload to the LLM at generation time. This is a known limitation of heading-based chunking: retrieval granularity is determined by how the source page is structured, not by what would be most useful for the user.
+
+A semantic chunking strategy is required to create context-aware chunks, and to improve retrieval quality. 

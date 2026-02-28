@@ -9,13 +9,13 @@ A RAG API that answers natural-language questions about I-MED Radiology imaging 
 The system contains three stages:
 
 **1. Scraping (`src/scraper.py`)**
-Six procedure pages are scraped from i-med.com.au using `requests` and `BeautifulSoup`. Each page is parsed into sections (heading → paragraph pairs) and stored as JSON in `procedure_data/procedures.json`. A 1.5-second delay between requests ensures polite crawling.
+Six procedure pages are scraped from i-med.com.au using `requests` and `BeautifulSoup`. Each page is parsed into sections (heading + paragraph pairs) and stored as JSON in `procedure_data/procedures.json`. A 1.5-second delay between requests ensures polite crawling.
 
-**2. Retrieval (`src/retriever.py`)**
-At startup, all scraped sections are split into chunks (one chunk per heading/body pair) and embedded using the `all-MiniLM-L6-v2` sentence-transformer model (~80MB, runs on CPU). Embeddings are held in memory as a numpy array. When a user submits a question, the query is embedded and compared against all stored chunk vectors using cosine similarity. The top-3 most similar chunks are returned. This is semantic search — it matches by meaning, not keywords.
+**2. Semantic Search Retrieval (`src/retriever.py`)**
+At startup, all scraped sections are split into chunks (one chunk: heading-body pair) and embedded using the `all-MiniLM-L6-v2` sentence-transformer model (~80MB, runs on CPU). Embeddings are held in memory as a numpy array. When a user submits a question, the query is embedded and compared against all stored chunk vectors using cosine similarity. Under this semantic search setup, the top-3 most similar chunks are returned. 
 
 **3. Generation (`src/llm.py`)**
-The retrieved chunks are assembled into a grounded prompt alongside the user's question and sent to a local `llama3.2:3b` model running via Ollama. The prompt explicitly instructs the model to answer only from the provided context. The response is returned with source citations (procedure title, URL, section heading).
+The retrieved chunks are assembled into a prompt alongside the user's question and sent to a local `llama3.2:3b` model running via Ollama. The prompt explicitly instructs the model to answer only from the provided context. The response is returned with source citations (procedure title, URL, section heading).
 
 **Design reference:** Structure inspired by [umbertogriffo/rag-chatbot](https://github.com/umbertogriffo/rag-chatbot), simplified to remove vector DB and multi-turn chat history dependencies, keeping only what is necessary for a single-turn grounded Q&A API.
 
@@ -28,6 +28,11 @@ The retrieved chunks are assembled into a grounded prompt alongside the user's q
 
 - Python 3.9+
 - [Ollama](https://ollama.com/) installed on your machine
+```
+**Mac:** Download and install from https://ollama.com/download
+**Linux:** curl -fsSL https://ollama.com/install.sh | sh
+```
+After installing, make sure Ollama is running: `ollama serve`
 
 ### One-command setup
 ```
@@ -40,7 +45,7 @@ chmod +x run.sh   # run once on setup
 2. Install all dependencies from `requirements.txt`
 3. Pull the `llama3.2:3b` model via Ollama (one-time ~2GB download)
 4. Run the scraper to build `procedure_data/procedures.json`
-5. Start the FastAPI server at `http://localhost:8000`
+5. Start the FastAPI server at `http://0.0.0.0:8000`
 
 ### Test the API
 `POST  ->  Try it out  ->  Edit question string and execute`
@@ -130,7 +135,7 @@ Then try the API at: `http://0.0.0.0:8000 `.
 
 ---
 
-### Query 4 — Duration of a procedure
+### Query 4 
 
 **Input:**
 ```json
@@ -179,12 +184,14 @@ Then try the API at: `http://0.0.0.0:8000 `.
 
 ## Known Limitations
 
-**Scraped procedures are fixed at build time.** The chatbot only covers 6 procedure pages. Any content added or updated on i-med.com.au after scraping will not be reflected until the scraper is re-run.
+**Scraped contents are fixed at build time.** The chatbot only covers 6 procedure pages. Any content added or updated on i-med.com.au after scraping will not be reflected until the scraper is re-run.
 
-**JavaScript-rendered pages cannot be scraped.** The scraper uses `requests` + `BeautifulSoup` which only reads static HTML content. Pages that load content dynamically via JavaScript, such as the clinic finder at `/find-a-radiology-clinic`, return only an empty shell. 
+**JavaScript-rendered pages cannot be scraped.** The scraper uses `requests` + `BeautifulSoup` which only reads static HTML content. Pages that load content dynamically after users enter input, such as the clinic finder at `/find-a-radiology-clinic`, return only an empty shell. 
 
-**Compound queries with mixed in-scope and out-of-scope sub-questions degrade answer quality.** When a single prompt contains multiple sub-questions and at least one falls outside the scraped content, the LLM tends to apply a blanket "insufficient information" response across all sub-questions rather than answering each independently. This is a prompt architecture limitation: all sub-questions share a single context block and a single `TOP_K=3` retrieval budget. A production fix would decompose compound queries before retrieval and run separate RAG passes per sub-question.
+**Queries with mixed in-scope and out-of-scope sub-questions will not be answered separately.** When a single prompt contains multiple sub-questions and at least one falls outside the scraped content, the LLM tends to apply a blanket "insufficient information" response across all sub-questions rather than answering each independently. This is a prompt architecture limitation: all sub-questions share a single context block and a single `TOP_K=3` retrieval budget. 
+<br>
+A production fix would decompose compound queries before retrieval and run separate RAG passes per sub-question.
 
-**Operational information is out of scope.** The public i-med.com.au website is essentially a brochure: it does not contain booking details, pricing, scan results, or clinic-specific contacts. These are handled by internal I-MED systems. The chatbot cannot answer the transactional questions patients most commonly need help with.
+**Operational information is out of scope.** The public i-med.com.au website is essentially a brochure: it does not contain booking details, pricing, scan results, or clinic-specific contacts. These are handled by internal I-MED systems. The chatbot cannot advise on questions that can lead to personal information being shared. 
 
 
