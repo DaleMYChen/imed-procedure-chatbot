@@ -30,9 +30,9 @@ The retrieved chunks are assembled into a grounded prompt alongside the user's q
 - [Ollama](https://ollama.com/) installed on your machine
 
 ### One-command setup
-
 ```
-bash run.sh
+chmod +x run.sh   # run once on setup
+./run.sh    
 ```
 
 `run.sh` will:
@@ -43,8 +43,7 @@ bash run.sh
 5. Start the FastAPI server at `http://localhost:8000`
 
 ### Test the API
-
-Once running, open **http://localhost:8000/docs** in your browser for the interactive UI.
+`POST  ->  Try it out  ->  Edit question string and execute`
 
 
 ### Docker 
