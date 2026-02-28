@@ -1,0 +1,28 @@
+# Use a lightweight Python base image
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Copy and install dependencies first 
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY src/ ./src/
+COPY procedure_data/ ./procedure_data/
+
+# If procedure_data/procedures.json doesn't exist yet, run scraper at build time
+RUN if [ ! -f procedure_data/procedures.json ]; then python src/scraper.py; fi
+
+# Expose FastAPI port
+EXPOSE 8000
+
+# Ollama runs on the host machine — host.docker.internal resolves to host OS from inside container
+ENV OLLAMA_HOST="http://host.docker.internal:11434"
+
+# src/ is not a package so we add it to PYTHONPATH for clean imports
+ENV PYTHONPATH="/app/src"
+
+# Run the API — src.main:app because main.py lives inside src/
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
