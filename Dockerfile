@@ -18,9 +18,10 @@ RUN if [ ! -f procedure_data/procedures.json ]; then python src/scraper.py; fi
 # Expose FastAPI port
 EXPOSE 8000
 
-# Ollama runs on the host machine — host.docker.internal resolves to host OS from inside container
-ENV OLLAMA_HOST="http://host.docker.internal:11434"
-
+# Gemini API key — supply at runtime via:
+#   docker run -e GEMINI_API_KEY=your_key ...
+#   or Cloud Run --set-env-vars / --set-secrets
+ENV GEMINI_API_KEY="AIzaSyDlksxjxYc8AFHdX1eQh-B-mBiqzkKf9Tk"
 # src/ is not a package so we add it to PYTHONPATH for clean imports
 ENV PYTHONPATH="/app/src"
 

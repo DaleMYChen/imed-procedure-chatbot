@@ -1,4 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+
+# Virtual environment
 venv/
-procedure_data/
-**/__pycache__/
-src/retrieved_results.py
+.venv/
+
+# Environment / secrets — never commit these
+.env
+gha-key.json
+*.json.key
+
+# Generated data — built at Docker build time by scraper.py
+procedure_data/procedures.json
+
+# Test cache and coverage output
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Compiled .pyc caches
+src/__pycache__/
+tests/__pycache__/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store

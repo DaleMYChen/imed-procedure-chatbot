@@ -48,7 +48,8 @@ def ask_question(request: QueryRequest):
     """
     result = ask(request.question)
 
-    if result.error and "ollama" in result.error:
+    # Surface Gemini-level failures as 503 so the caller knows to retry
+    if result.error and "gemini" in result.error:
         raise HTTPException(status_code=503, detail=result.answer)
 
     return AnswerResponse(

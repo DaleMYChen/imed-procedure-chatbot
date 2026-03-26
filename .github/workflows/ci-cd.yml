@@ -1,0 +1,109 @@
+name: CI / CD
+
+# Triggers:
+#   - Every push and PR: run tests (ci job)
+#   - Push to devops only: also build, push image, deploy to Cloud Run (cd job)
+on:
+  push:
+    branches: ["gcp", "devops"]    # tests run on push to either
+  pull_request:
+    branches: [devops]             # PR checks gate merges into devops
+
+env:
+  REGION: australia-southeast1
+  REPO: imed-chatbot
+  SERVICE: imed-chatbot
+  IMAGE: australia-southeast1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/imed-chatbot/app
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1 — CI: run tests on every push / PR
+  # ---------------------------------------------------------------------------
+  test:
+    name: Run pytest suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip               # cache pip downloads between runs
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests with coverage
+        env:
+          # Tests that mock Gemini don't need this, but a real key lets you
+          # add smoke tests later without touching the YAML.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: pytest tests/
+
+  # ---------------------------------------------------------------------------
+  # Job 2 — CD: build image, push to Artifact Registry, deploy to Cloud Run
+  #   - Only runs on push to main (not on PRs)
+  #   - Only runs if the test job passed (needs: test)
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Build and deploy to Cloud Run
+    runs-on: ubuntu-latest
+    needs: test                    # blocks deploy if any test fails
+    if: github.ref == 'refs/heads/devops' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Authenticate to GCP using the service account key secret
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # Configure Docker to push to Artifact Registry
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      # Build the Docker image, tagged with the git commit SHA for traceability
+      # (so you can always roll back to an exact commit)
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t ${{ env.IMAGE }}:${{ github.sha }} \
+            -t ${{ env.IMAGE }}:latest \
+            .
+
+      # Push both tags: the commit SHA (immutable) and latest (convenience)
+      - name: Push image to Artifact Registry
+        run: |
+          docker push ${{ env.IMAGE }}:${{ github.sha }}
+          docker push ${{ env.IMAGE }}:latest
+
+      # Deploy the specific SHA-tagged image to Cloud Run.
+      # GEMINI_API_KEY is injected as an environment variable inside the container.
+      # --no-traffic is NOT used here — traffic is cut over immediately on deploy.
+      # For a staging setup you would deploy with --no-traffic first, run smoke
+      # tests, then promote with: gcloud run services update-traffic ...
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.SERVICE }} \
+            --image ${{ env.IMAGE }}:${{ github.sha }} \
+            --platform managed \
+            --region ${{ env.REGION }} \
+            --allow-unauthenticated \
+            --port 8000 \
+            --set-env-vars GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
+            --project ${{ secrets.GCP_PROJECT_ID }}
+
+      # Print the live service URL so it appears in the Actions run log
+      - name: Print deployed service URL
+        run: |
+          gcloud run services describe ${{ env.SERVICE }} \
+            --region ${{ env.REGION }} \
+            --project ${{ secrets.GCP_PROJECT_ID }} \
+            --format "value(status.url)"

@@ -1,6 +1,6 @@
 """
 Takes a natural-language question, retrieves relevant procedure chunks via
-the Retriever, and generates a grounded answer through a local Ollama model.
+the Retriever, and generates a grounded answer through the Gemini API.
 
 Adapted from the rag_chatbot_app generation step in:
   https://github.com/umbertogriffo/rag-chatbot
@@ -10,10 +10,12 @@ but simplified: single-turn, no chat history, FastAPI-friendly return dict.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-import ollama
+import google.generativeai as genai
+from google.api_core.exceptions import GoogleAPIError
 
 from .retriever import Chunk, get_retriever
 
@@ -21,11 +23,21 @@ from .retriever import Chunk, get_retriever
 # Config
 # ---------------------------------------------------------------------------
 
-OLLAMA_MODEL = "llama3.2:3b"
-OLLAMA_TIMEOUT = 60          # seconds; ollama.chat blocks until response
+GEMINI_MODEL   = "models/gemini-3-flash-preview"
 MAX_CONTEXT_CHARS = 3000     # truncate combined chunk text to stay within context window
+TEMPERATURE    = 0.1         # low temp: deterministic answers for medical context
 
 logger = logging.getLogger(__name__)
+
+# Configure Gemini client once at import time.
+# GEMINI_API_KEY must be set in the environment (e.g. via .env or Cloud Run secret).
+_api_key = os.environ.get("GEMINI_API_KEY")
+if _api_key:
+    genai.configure(api_key=_api_key)
+else:
+    logger.warning(
+        "GEMINI_API_KEY is not set. Calls to ask() will fail until it is provided."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +57,9 @@ class BotResponse:
 
 def _build_prompt(question: str, chunks: list[Chunk]) -> str:
     """
-    Assemble a RAG prompt. Both question & similar chunks in raw text.
+    Assemble a RAG prompt — question + retrieved chunks as grounding context.
+    Truncates combined chunk text to MAX_CONTEXT_CHARS to stay within the
+    model's context window.
     """
     context_parts = []
     char_count = 0
@@ -59,7 +73,7 @@ def _build_prompt(question: str, chunks: list[Chunk]) -> str:
 
     context = "\n\n---\n\n".join(context_parts)
 
-    return f"""You are a helpful assistant for patients and clinic staff who want to find out about I-MED Radiology’s imaging procedures.
+    return f"""You are a helpful assistant for patients and clinic staff who want to find out about I-MED Radiology's imaging procedures.
             Answer ONLY based on the context below. Do not use outside knowledge.
             If the answer cannot be found in the context, say exactly:
             "I don't have enough information about that in the I-MED procedure content. Please instead submit an enquiry at https://i-med.com.au/contact-us"
@@ -81,12 +95,13 @@ def ask(question: str) -> BotResponse:
     End-to-end RAG pipeline:
       1. Retrieve relevant chunks (semantic search)
       2. Build grounded prompt
-      3. Call Ollama LLM
+      3. Call Gemini API
       4. Return structured response with source citations
 
     Error conditions:
       - Error A: No relevant chunks found (score below threshold)
-      - Error B: Ollama call fails (timeout, model not loaded, connection error)
+      - Error B: GEMINI_API_KEY missing
+      - Error C: Gemini API call fails (quota, invalid key, network error)
     """
     retriever = get_retriever()
 
@@ -109,34 +124,41 @@ def ask(question: str) -> BotResponse:
     # --- Step 2: Build prompt -----------------------------------------------
     prompt = _build_prompt(question, chunks)
 
-    # --- Step 3: Call Ollama ------------------------------------------------
-    try:
-        response = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            options={"temperature": 0.1},   # low temp: deterministic info for medical context
-        )
-        answer_text = response["message"]["content"].strip()
+    # --- Step 3: Call Gemini ------------------------------------------------
 
-    # Error condition B: Ollama not running / model not pulled / timeout
-    except ollama.ResponseError as exc:
-        logger.error("Ollama response error: %s", exc)
+    # Error condition B: API key not configured
+    if not os.environ.get("GEMINI_API_KEY"):
+        return BotResponse(
+            answer="The language model is not configured. Please set the GEMINI_API_KEY environment variable.",
+            sources=[],
+            error="gemini_api_key_missing",
+        )
+
+    try:
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(temperature=TEMPERATURE),
+        )
+        answer_text = response.text.strip()
+
+    # Error condition C: Gemini API / network failure
+    except GoogleAPIError as exc:
+        logger.error("Gemini API error: %s", exc)
         return BotResponse(
             answer="The language model returned an error. Please try again.",
             sources=[],
-            error=f"ollama_response_error: {exc}",
+            error=f"gemini_api_error: {exc}",
         )
     except Exception as exc:
-        # Covers ConnectionRefusedError (Ollama not running), etc.
-        logger.error("Ollama call failed: %s", exc)
+        logger.error("Unexpected error calling Gemini: %s", exc)
         return BotResponse(
             answer=(
                 "Could not reach the language model. "
-                "Make sure Ollama is running (`ollama serve`) "
-                f"and that `{OLLAMA_MODEL}` is pulled."
+                "Please check your GEMINI_API_KEY and network connection."
             ),
             sources=[],
-            error=f"ollama_unavailable: {exc}",
+            error=f"gemini_unavailable: {exc}",
         )
 
     # --- Step 4: Assemble sources -------------------------------------------
@@ -171,7 +193,6 @@ if __name__ == "__main__":
         print(f"  • {s['title']} ({s['section']}) — {s['url']}")
     if result.error:
         print(f"\n[Error code: {result.error}]")
-
 
 
 # python src/llm.py "How should I prepare for a CT scan?"
