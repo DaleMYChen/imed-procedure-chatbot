@@ -10,10 +10,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
-COPY procedure_data/ ./procedure_data/
+# COPY procedure_data/ ./procedure_data/
 
-# If procedure_data/procedures.json doesn't exist yet, run scraper at build time
-RUN if [ ! -f procedure_data/procedures.json ]; then python src/scraper.py; fi
+# Create the data directory and populate it by running the scraper at build time
+RUN mkdir -p procedure_data && python src/scraper.py
 
 # Expose FastAPI port
 EXPOSE 8000

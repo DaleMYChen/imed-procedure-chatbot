@@ -59,7 +59,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Authenticate to GCP using the service account key secret
+      # Authenticate to GCP using the service account key (GCP_SA_KEY)
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
@@ -86,9 +86,7 @@ jobs:
 
       # Deploy the specific SHA-tagged image to Cloud Run.
       # GEMINI_API_KEY is injected as an environment variable inside the container.
-      # --no-traffic is NOT used here — traffic is cut over immediately on deploy.
-      # For a staging setup you would deploy with --no-traffic first, run smoke
-      # tests, then promote with: gcloud run services update-traffic ...
+      # Pull the specific SHA-tagged image and serve it.
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE }} \
