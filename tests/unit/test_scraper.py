@@ -1,5 +1,5 @@
 """
-Unit tests for src/scrapper.py
+Unit tests for src/scraper.py
 
 Network calls (requests.get) and filesystem writes (json.dump, mkdir) are
 mocked so tests run without internet access or disk side-effects.
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import requests
 
-from src.scrapper import _fetch_html, _parse_procedure, scrape_all, Procedure
+from src.scraper import _fetch_html, _parse_procedure, scrape_all, Procedure
 
 
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ class TestFetchHtml:
         mock_response.text = "<html>content</html>"
         mock_response.raise_for_status.return_value = None
 
-        with patch("src.scrapper.requests.get", return_value=mock_response):
+        with patch("src.scraper.requests.get", return_value=mock_response):
             result = _fetch_html("https://example.com")
 
         assert result == "<html>content</html>"
@@ -59,7 +59,7 @@ class TestFetchHtml:
     def test_returns_none_on_connection_error(self):
         """ConnectionError is caught and None is returned (no exception raised)."""
         with patch(
-            "src.scrapper.requests.get",
+            "src.scraper.requests.get",
             side_effect=requests.exceptions.ConnectionError,
         ):
             result = _fetch_html("https://example.com")
@@ -69,7 +69,7 @@ class TestFetchHtml:
     def test_returns_none_on_timeout(self):
         """Timeout is caught and None is returned."""
         with patch(
-            "src.scrapper.requests.get",
+            "src.scraper.requests.get",
             side_effect=requests.exceptions.Timeout,
         ):
             result = _fetch_html("https://example.com")
@@ -83,7 +83,7 @@ class TestFetchHtml:
         http_error = requests.exceptions.HTTPError(response=mock_response)
 
         with patch(
-            "src.scrapper.requests.get",
+            "src.scraper.requests.get",
             side_effect=http_error,
         ):
             result = _fetch_html("https://example.com")
@@ -96,7 +96,7 @@ class TestFetchHtml:
         mock_response.text = ""
         mock_response.raise_for_status.return_value = None
 
-        with patch("src.scrapper.requests.get", return_value=mock_response) as mock_get:
+        with patch("src.scraper.requests.get", return_value=mock_response) as mock_get:
             _fetch_html("https://example.com")
 
         _, kwargs = mock_get.call_args
@@ -181,10 +181,10 @@ class TestScrapeAll:
         mock_response.raise_for_status.return_value = None
 
         with (
-            patch("src.scrapper.requests.get", return_value=mock_response),
-            patch("src.scrapper.time.sleep"),
+            patch("src.scraper.requests.get", return_value=mock_response),
+            patch("src.scraper.time.sleep"),
             patch("builtins.open", mock_open()),
-            patch("src.scrapper.OUTPUT_PATH") as mock_out,
+            patch("src.scraper.OUTPUT_PATH") as mock_out,
         ):
             mock_out.parent.mkdir = MagicMock()
             mock_out.__str__ = lambda s: "/fake/path"
@@ -196,10 +196,10 @@ class TestScrapeAll:
     def test_records_error_stub_on_fetch_failure(self):
         """If a page can't be fetched, a stub dict with 'error' key is recorded."""
         with (
-            patch("src.scrapper.requests.get", side_effect=requests.exceptions.ConnectionError),
-            patch("src.scrapper.time.sleep"),
+            patch("src.scraper.requests.get", side_effect=requests.exceptions.ConnectionError),
+            patch("src.scraper.time.sleep"),
             patch("builtins.open", mock_open()),
-            patch("src.scrapper.OUTPUT_PATH") as mock_out,
+            patch("src.scraper.OUTPUT_PATH") as mock_out,
         ):
             mock_out.parent.mkdir = MagicMock()
             mock_out.__str__ = lambda s: "/fake/path"
