@@ -95,6 +95,8 @@ jobs:
             --region ${{ env.REGION }} \
             --allow-unauthenticated \
             --port 8000 \
+            --memory 2Gi \
+            --cpu 2 \
             --set-env-vars GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
             --project ${{ secrets.GCP_PROJECT_ID }}
 
