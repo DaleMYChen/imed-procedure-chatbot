@@ -17,7 +17,7 @@ from typing import List, Optional
 import google.generativeai as genai
 from google.api_core.exceptions import GoogleAPIError
 
-from .retriever import Chunk, get_retriever
+from src.retriever import Chunk, get_retriever
 
 # ---------------------------------------------------------------------------
 # Config

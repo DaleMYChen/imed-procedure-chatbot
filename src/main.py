@@ -6,11 +6,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from .llm import ask, BotResponse
+from src.llm import ask, BotResponse
 
 app = FastAPI(title="I-MED Procedure Assistant")
 
-
+### 1. Define pydantic dataclasses to validate
 class QueryRequest(BaseModel):
     question: str
 
@@ -27,6 +27,9 @@ class AnswerResponse(BaseModel):
     error: Optional[str] = None
 
 
+### 2. Define routes
+
+# a landing page
 @app.get("/", response_class=HTMLResponse)
 def read_root():
     return """
@@ -40,11 +43,11 @@ def read_root():
     """
 
 
+# the request-response endpoint
 @app.post("/api/ask", response_model=AnswerResponse)
 def ask_question(request: QueryRequest):
     """
-    Ask a natural-language question about I-MED imaging procedures.
-    Returns a grounded answer and the source page(s) it was drawn from.
+    Input request to /api/ask is a str question
     """
     result = ask(request.question)
 

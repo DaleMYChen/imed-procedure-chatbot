@@ -18,12 +18,6 @@ RUN mkdir -p procedure_data && python src/scraper.py
 # Expose FastAPI port
 EXPOSE 8000
 
-# Gemini API key — supply at runtime via:
-#   docker run -e GEMINI_API_KEY=your_key ...
-#   or Cloud Run --set-env-vars / --set-secrets
-# src/ is not a package so we add it to PYTHONPATH for clean imports
-ENV PYTHONPATH="/app/src"
-
 # Run the API — src.main:app because main.py lives inside src/
 # CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
 CMD sh -c "uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}"

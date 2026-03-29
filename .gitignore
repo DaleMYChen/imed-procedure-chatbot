@@ -31,3 +31,7 @@ tests/__pycache__/
 
 # macOS
 .DS_Store
+
+
+# Notes
+src/fastapi_general.py
