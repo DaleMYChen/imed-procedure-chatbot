@@ -59,6 +59,11 @@ docker run -p 8000:8000 imed-chatbot
 ```
 Then try the API at: `http://0.0.0.0:8000 `.
 
+### GCP Cloud Run
+```
+https://imed-chatbot-1053993616231.australia-southeast1.run.app
+```
+
 ---
 
 ## Example Queries and Outputs
