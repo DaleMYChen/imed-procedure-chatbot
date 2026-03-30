@@ -19,4 +19,4 @@ EXPOSE 8000
 
 # Run the API — src.main:app because main.py lives inside src/
 # CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]   #pure exec form can't do variable expansion
-CMD exec uvicorn src.main:app --host 0.0.0.0 --port {$PORT: -8000}
+CMD exec uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}
