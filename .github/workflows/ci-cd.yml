@@ -7,12 +7,11 @@ on:
   push:
     branches: ["gcp", "devops"]    # tests run on push to either
   pull_request:
-    branches: [devops]             # PR checks gate merges into devops
+    branches: ["devops"]             # PR checks gate merges into devops
 
 env:
   REGION: australia-southeast1
-  REPO: imed-chatbot
-  SERVICE: imed-chatbot
+  SERVICE: imed-chatbot         # CR service name
   IMAGE: australia-southeast1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/imed-chatbot/app
 
 jobs:
@@ -46,7 +45,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Job 2 — CD: build image, push to Artifact Registry, deploy to Cloud Run
-  #   - Only runs on push to main (not on PRs)
+  #   - Only runs on push to production branch
   #   - Only runs if the test job passed (needs: test)
   # ---------------------------------------------------------------------------
   deploy:
@@ -94,7 +93,6 @@ jobs:
             --platform managed \
             --region ${{ env.REGION }} \
             --allow-unauthenticated \
-            --port 8000 \
             --memory 2Gi \
             --cpu 2 \
             --set-env-vars GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \

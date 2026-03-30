@@ -10,7 +10,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
-# COPY procedure_data/ ./procedure_data/
 
 # Create the data directory and populate it by running the scraper at build time
 RUN mkdir -p procedure_data && python src/scraper.py
@@ -19,5 +18,5 @@ RUN mkdir -p procedure_data && python src/scraper.py
 EXPOSE 8000
 
 # Run the API — src.main:app because main.py lives inside src/
-# CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
-CMD sh -c "uvicorn src.main:app --host 0.0.0.0 --port ${PORT:-8000}"
+# CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]   #pure exec form can't do variable expansion
+CMD exec uvicorn src.main:app --host 0.0.0.0 --port {$PORT: -8000}
