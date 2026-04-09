@@ -11,7 +11,6 @@ sys.modules['torch'] = MagicMock()
 sys.modules['sentence_transformers'] = MagicMock()
 
 import pytest
-from unittest.mock import MagicMock
 
 from src.retriever import Chunk
 

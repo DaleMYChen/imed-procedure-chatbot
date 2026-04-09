@@ -35,3 +35,5 @@ tests/__pycache__/
 
 # Notes
 src/fastapi_general.py
+ANSWERS.md
+async_demo.md
