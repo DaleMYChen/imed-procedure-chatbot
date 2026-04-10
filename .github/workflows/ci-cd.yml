@@ -5,9 +5,9 @@ name: CI / CD
 #   - Push to devops only: also build, push image, deploy to Cloud Run (cd job)
 on:
   push:
-    branches: ["gcp", "devops"]    # tests run on push to either
+    branches: ["devops", "main"]
   pull_request:
-    branches: ["devops"]             # PR checks gate merges into devops
+    branches: ["main"]             # PR checks gate merges into devops
 
 env:
   REGION: australia-southeast1
@@ -52,7 +52,7 @@ jobs:
     name: Build and deploy to Cloud Run
     runs-on: ubuntu-latest
     needs: test                    # blocks deploy if any test fails
-    if: github.ref == 'refs/heads/devops' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
     steps:
       - name: Checkout code
