@@ -1,3 +1,6 @@
+# syntax=docker/dockerfile:1
+# The directive above enables BuildKit secret mounts used in the index-build step.
+
 # Use a lightweight Python base image
 FROM python:3.11-slim
 
@@ -11,8 +14,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/ ./src/
 
-# Create the data directory and populate it by running the scraper at build time
+# Step 1: scrape procedure pages → procedure_data/procedures.json
+# (no API key needed — pure HTTP scraping)
 RUN mkdir -p procedure_data && python src/scraper.py
+
+# Step 2: build ChromaDB index → chroma_store/
+# The Gemini API key is mounted as a BuildKit secret: it is never written to
+# any image layer and does not appear in `docker history`.
+RUN --mount=type=secret,id=gemini_key \
+    GEMINI_API_KEY=$(cat /run/secrets/gemini_key) \
+    python -c "from src.retriever import get_retriever; get_retriever()"
 
 # Expose FastAPI port
 EXPOSE 8000

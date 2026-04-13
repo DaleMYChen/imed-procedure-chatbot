@@ -1,0 +1,7 @@
+# Evaluation dependencies — NOT included in the production Docker image.
+# Install separately when running src/evaluate.py:
+#   pip install -r requirements-eval.txt
+
+ragas>=0.2.0
+mlflow>=2.0.0
+langchain-google-genai>=2.0.0

@@ -1,89 +1,118 @@
 """
 Unit tests for src/retriever.py
 
-All external dependencies (SentenceTransformer, filesystem) are mocked so
-tests run fast with no model download or disk access required.
+Each test uses pytest's tmp_path fixture for a unique PersistentClient database,
+giving complete isolation without shared in-memory state between tests.
+
+The procedures JSON is written to a real temp file so builtins.open is not
+patched globally — chromadb's own file I/O is unaffected.
+
+genai.embed_content is patched to return deterministic vectors so tests run
+fully offline with no Gemini API key.
 """
 
 import json
+import math
 import pytest
 import numpy as np
+import chromadb
 from pathlib import Path
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 
-from src.retriever import Retriever, Chunk, get_retriever, MIN_SCORE, TOP_K
+from src.retriever import Retriever, Chunk, get_retriever, MIN_SCORE, TOP_K, COLLECTION
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_retriever(procedures_json: list) -> Retriever:
-    """
-    Instantiate a Retriever with fully mocked filesystem and embedding model.
-    Returns a Retriever whose _embeddings are deterministic unit vectors.
-    """
-    # Deterministic fake embeddings: one 4-dim unit vector per chunk
-    # (the real model uses 384-dim; dimensionality doesn't matter for tests)
-    n_sections = sum(len(p["sections"]) for p in procedures_json if not p.get("error"))
+_DIM = 768
+_UNIT = 1.0 / math.sqrt(_DIM)   # uniform unit vector component
 
-    fake_embeddings = np.eye(n_sections, 4, dtype=np.float32)  # orthogonal unit vecs
 
-    mock_model = MagicMock()
-    # encode() is called once for all chunk texts, then once per query
-    mock_model.encode.side_effect = [
-        fake_embeddings,                   # bulk embed at startup
-        # individual query embeds are set in each test
-    ]
+def _uniform_embed(model, content, task_type, **kwargs):
+    """
+    Fake embed_content: every input gets the same L2-normalised uniform vector.
+    All stored chunks therefore have cosine similarity ≈ 1 with each other.
+    **kwargs absorbs output_dimensionality and any future API parameters.
+    """
+    if isinstance(content, list):
+        return {"embedding": [[_UNIT] * _DIM for _ in content]}
+    return {"embedding": [_UNIT] * _DIM}
+
+
+def _make_retriever(
+    procedures_json: list,
+    tmp_path: Path,
+    embed_fn=None,
+) -> Retriever:
+    """
+    Build a Retriever backed by a real PersistentClient at tmp_path/chroma.
+
+    - procedures_json is written to tmp_path/procedures.json so builtins.open
+      is NOT patched globally — chromadb's internal file I/O is unaffected.
+    - DATA_PATH is patched to the real temp file (exists() returns True naturally).
+    - CHROMA_PATH is patched to tmp_path/chroma for per-test DB isolation.
+    - genai.embed_content is replaced by embed_fn (default: _uniform_embed).
+    """
+    data_file = tmp_path / "procedures.json"
+    data_file.write_text(json.dumps(procedures_json), encoding="utf-8")
+    chroma_dir = tmp_path / "chroma"
 
     with (
-        patch("src.retriever.DATA_PATH") as mock_path,
-        patch("src.retriever.SentenceTransformer", return_value=mock_model),
-        patch("builtins.open", mock_open(read_data=json.dumps(procedures_json))),
+        patch("src.retriever.DATA_PATH", data_file),
+        patch("src.retriever.CHROMA_PATH", chroma_dir),
+        patch("src.retriever.genai.embed_content",
+              side_effect=embed_fn or _uniform_embed),
     ):
-        mock_path.exists.return_value = True
         retriever = Retriever()
-
-    retriever._model = mock_model   # keep a reference for per-test encode() setup
     return retriever
 
 
 # ---------------------------------------------------------------------------
-# _load_and_embed
+# Path B — _build_and_persist (collection empty on first run)
 # ---------------------------------------------------------------------------
 
-class TestLoadAndEmbed:
+class TestBuildAndPersist:
 
-    def test_chunks_created_from_sections(self, sample_procedures_json):
-        """One Chunk is created for each non-empty section across all procedures."""
-        retriever = _make_retriever(sample_procedures_json)
+    def test_documents_added_to_collection(self, sample_procedures_json, tmp_path):
+        """All non-empty sections are stored as documents in the collection.
 
-        # CT Scan has 2 sections, PET Scan has 1 → 3 chunks total
-        assert len(retriever._chunks) == 3
+        sample_procedures_json: 2 CT Scan sections + 1 PET Scan section.
+        Each body is short enough that the splitter produces one sub-chunk each.
+        """
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
+        assert retriever._collection.count() == 3
 
-    def test_chunk_fields_populated(self, sample_procedures_json):
-        """Chunk fields are correctly mapped from the JSON source."""
-        retriever = _make_retriever(sample_procedures_json)
+    def test_metadata_stored_correctly(self, sample_procedures_json, tmp_path):
+        """procedure_title, url, and heading are present in every stored metadata dict."""
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
+        result = retriever._collection.get(include=["metadatas"])
 
-        ct_chunks = [c for c in retriever._chunks if c.procedure_title == "CT Scan"]
-        assert len(ct_chunks) == 2
+        for meta in result["metadatas"]:
+            assert "procedure_title" in meta
+            assert "url" in meta
+            assert "heading" in meta
 
-        headings = {c.heading for c in ct_chunks}
-        assert "Overview" in headings
-        assert "Preparation" in headings
+        titles = {m["procedure_title"] for m in result["metadatas"]}
+        assert "CT Scan" in titles
+        assert "PET Scan" in titles
 
-    def test_chunk_text_combines_heading_and_body(self, sample_procedures_json):
-        """chunk.text = '<heading>\\n<body>' for embedding context."""
-        retriever = _make_retriever(sample_procedures_json)
+    def test_document_text_format(self, sample_procedures_json, tmp_path):
+        """Each stored document is '<heading>\\n<body>' (heading prepended)."""
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
+        result = retriever._collection.get(include=["documents", "metadatas"])
 
-        overview_chunk = next(
-            c for c in retriever._chunks
-            if c.heading == "Overview" and c.procedure_title == "CT Scan"
-        )
-        assert overview_chunk.text == "Overview\nA CT scan uses X-rays."
+        ct_overview_docs = [
+            doc
+            for doc, meta in zip(result["documents"], result["metadatas"])
+            if meta["procedure_title"] == "CT Scan" and meta["heading"] == "Overview"
+        ]
+        assert len(ct_overview_docs) == 1
+        assert ct_overview_docs[0] == "Overview\nA CT scan uses X-rays."
 
-    def test_skips_procedures_with_error_flag(self):
-        """Procedures with an 'error' field in JSON are skipped entirely."""
+    def test_skips_procedures_with_error_flag(self, tmp_path):
+        """Procedures with an 'error' field are not added to the collection."""
         procedures = [
             {
                 "title": "Broken Page",
@@ -92,55 +121,85 @@ class TestLoadAndEmbed:
                 "sections": {},
             }
         ]
-        # Provide an empty embedding so the call doesn't fail
-        mock_model = MagicMock()
-        mock_model.encode.return_value = np.zeros((0, 4), dtype=np.float32)
+        retriever = _make_retriever(procedures, tmp_path)
+        assert retriever._collection.count() == 0
 
-        with (
-            patch("src.retriever.DATA_PATH") as mock_path,
-            patch("src.retriever.SentenceTransformer", return_value=mock_model),
-            patch("builtins.open", mock_open(read_data=json.dumps(procedures))),
-        ):
-            mock_path.exists.return_value = True
-            retriever = Retriever()
-
-        assert retriever._chunks == []
-
-    def test_skips_empty_sections(self):
-        """Sections with blank body text are not turned into chunks."""
+    def test_skips_empty_sections(self, tmp_path):
+        """Sections with whitespace-only body produce no document in the collection."""
         procedures = [
             {
                 "title": "CT Scan",
                 "url": "https://example.com",
                 "sections": {
                     "Overview": "Some text here.",
-                    "Empty Section": "   ",   # whitespace only — should be skipped
+                    "Empty Section": "   ",
                 },
             }
         ]
-        mock_model = MagicMock()
-        mock_model.encode.return_value = np.eye(1, 4, dtype=np.float32)
+        retriever = _make_retriever(procedures, tmp_path)
+        assert retriever._collection.count() == 1
 
-        with (
-            patch("src.retriever.DATA_PATH") as mock_path,
-            patch("src.retriever.SentenceTransformer", return_value=mock_model),
-            patch("builtins.open", mock_open(read_data=json.dumps(procedures))),
-        ):
-            mock_path.exists.return_value = True
-            retriever = Retriever()
+        result = retriever._collection.get(include=["metadatas"])
+        assert result["metadatas"][0]["heading"] == "Overview"
 
-        assert len(retriever._chunks) == 1
-        assert retriever._chunks[0].heading == "Overview"
-
-    def test_raises_if_data_file_missing(self):
+    def test_raises_if_data_file_missing(self, tmp_path):
         """FileNotFoundError is raised when procedures.json does not exist."""
+        missing_file = tmp_path / "missing.json"   # not created → exists() = False
+        chroma_dir = tmp_path / "chroma"
+
         with (
-            patch("src.retriever.DATA_PATH") as mock_path,
-            patch("src.retriever.SentenceTransformer"),
+            patch("src.retriever.DATA_PATH", missing_file),
+            patch("src.retriever.CHROMA_PATH", chroma_dir),
         ):
-            mock_path.exists.return_value = False
             with pytest.raises(FileNotFoundError, match="Data file not found"):
                 Retriever()
+
+    def test_no_chunks_held_in_memory_after_build(self, sample_procedures_json, tmp_path):
+        """The Retriever has no _chunks attribute — everything lives in the collection."""
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
+        assert not hasattr(retriever, "_chunks")
+
+
+# ---------------------------------------------------------------------------
+# Path A — _load_from_store (collection already populated)
+# ---------------------------------------------------------------------------
+
+class TestLoadFromStore:
+
+    def test_skips_embedding_when_collection_populated(self, tmp_path):
+        """Path A: genai.embed_content is never called when collection already has data."""
+        chroma_dir = tmp_path / "chroma"
+
+        # Phase 1: pre-populate via a direct PersistentClient
+        setup_client = chromadb.PersistentClient(path=str(chroma_dir))
+        col = setup_client.get_or_create_collection(
+            COLLECTION, metadata={"hnsw:space": "cosine"}
+        )
+        col.add(
+            ids=["0"],
+            documents=["Overview\nA CT scan uses X-rays."],
+            embeddings=[[_UNIT] * _DIM],
+            metadatas=[{
+                "procedure_title": "CT Scan",
+                "url": "https://i-med.com.au/procedures/ct-scan",
+                "heading": "Overview",
+            }],
+        )
+        # Release the connection before the Retriever opens its own
+        del col, setup_client
+
+        # Phase 2: Retriever detects existing data → path A → no embedding
+        embed_mock = MagicMock()
+        with (
+            patch("src.retriever.DATA_PATH"),
+            patch("src.retriever.CHROMA_PATH", chroma_dir),
+            patch("src.retriever.genai.embed_content") as embed_mock,
+        ):
+            retriever = Retriever()
+
+        embed_mock.assert_not_called()
+        assert retriever._collection.count() == 1
+
 
 # ---------------------------------------------------------------------------
 # retrieve()
@@ -148,95 +207,114 @@ class TestLoadAndEmbed:
 
 class TestRetrieve:
 
-    def _retriever_with_query_vec(self, procedures_json, query_vec: np.ndarray):
+    def test_returns_chunks_above_min_score(self, sample_procedures_json, tmp_path):
+        """Chunks with cosine similarity >= MIN_SCORE are returned."""
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
+
+        # Query aligned with stored uniform vectors → similarity ≈ 1.0
+        with patch("src.retriever.genai.embed_content") as mock_embed:
+            mock_embed.return_value = {"embedding": [_UNIT] * _DIM}
+            results = retriever.retrieve("test query")
+
+        assert len(results) > 0
+        for chunk in results:
+            assert chunk.score >= MIN_SCORE
+
+    def test_empty_query_returns_empty_list(self, sample_procedures_json, tmp_path):
+        """Empty or whitespace-only query short-circuits before any embedding."""
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
+
+        with patch("src.retriever.genai.embed_content") as mock_embed:
+            assert retriever.retrieve("") == []
+            assert retriever.retrieve("   ") == []
+            mock_embed.assert_not_called()
+
+    def test_respects_top_k(self, sample_procedures_json, tmp_path):
+        """No more than top_k chunks are returned regardless of how many match."""
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
+
+        with patch("src.retriever.genai.embed_content") as mock_embed:
+            mock_embed.return_value = {"embedding": [_UNIT] * _DIM}
+            results = retriever.retrieve("test", top_k=1)
+
+        assert len(results) <= 1
+
+    def test_returned_chunks_have_correct_fields(self, sample_procedures_json, tmp_path):
+        """Each returned Chunk has all required fields populated with the right types."""
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
+
+        with patch("src.retriever.genai.embed_content") as mock_embed:
+            mock_embed.return_value = {"embedding": [_UNIT] * _DIM}
+            results = retriever.retrieve("CT scan preparation")
+
+        assert len(results) > 0
+        for chunk in results:
+            assert isinstance(chunk.procedure_title, str) and chunk.procedure_title
+            assert isinstance(chunk.url, str) and chunk.url
+            assert isinstance(chunk.heading, str) and chunk.heading
+            assert isinstance(chunk.text, str) and chunk.text
+            assert isinstance(chunk.score, float)
+
+    def test_below_min_score_chunks_excluded(self, sample_procedures_json, tmp_path):
+        """Chunks whose cosine similarity falls below MIN_SCORE are not returned.
+
+        All stored embeddings are the uniform vector [unit, unit, ..., unit].
+        A query vector of [1, 0, 0, ..., 0] has cosine similarity = 1/sqrt(768)
+        ≈ 0.036 with each stored chunk — below MIN_SCORE = 0.25.
         """
-        Helper: build a Retriever then configure query embed to return query_vec.
-        Because _make_retriever consumes one encode() call for bulk embed,
-        we add the query vec as the next side_effect entry.
-        """
-        retriever = _make_retriever(procedures_json)
-        # Append query result to existing side_effect list
-        retriever._model.encode.side_effect = [query_vec]
-        return retriever
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
 
-    def test_returns_top_matching_chunk(self, sample_procedures_json):
-        """The chunk with the highest cosine similarity is returned first."""
-        retriever = _make_retriever(sample_procedures_json)
-        # Query vector aligned with chunk index 0 (first eye row = [1,0,0,0])
-        retriever._model.encode.side_effect = [np.array([1, 0, 0, 0], dtype=np.float32)]
+        low_sim_query = [1.0] + [0.0] * (_DIM - 1)
 
-        results = retriever.retrieve("test query")
+        with patch("src.retriever.genai.embed_content") as mock_embed:
+            mock_embed.return_value = {"embedding": low_sim_query}
+            results = retriever.retrieve("completely unrelated query")
 
-        assert len(results) >= 1
-        # First result should have the highest score
-        assert results[0].score >= results[-1].score
+        assert results == []
 
-    def test_scores_attached_to_returned_chunks(self, sample_procedures_json):
-        """Each returned Chunk has score populated from cosine similarity."""
-        retriever = _make_retriever(sample_procedures_json)
-        retriever._model.encode.side_effect = [np.array([1, 0, 0, 0], dtype=np.float32)]
+    def test_scores_attached_to_returned_chunks(self, sample_procedures_json, tmp_path):
+        """score on returned Chunk equals 1 - cosine_distance; finite and above threshold."""
+        retriever = _make_retriever(sample_procedures_json, tmp_path)
 
-        results = retriever.retrieve("any question")
+        with patch("src.retriever.genai.embed_content") as mock_embed:
+            mock_embed.return_value = {"embedding": [_UNIT] * _DIM}
+            results = retriever.retrieve("any question")
 
         for chunk in results:
             assert isinstance(chunk.score, float)
             assert chunk.score >= MIN_SCORE
-
-    def test_empty_query_returns_empty_list(self, sample_procedures_json):
-        """Empty or whitespace-only query short-circuits before embedding."""
-        retriever = _make_retriever(sample_procedures_json)
-
-        assert retriever.retrieve("") == []
-        assert retriever.retrieve("   ") == []
-
-    def test_below_min_score_chunks_excluded(self, sample_procedures_json):
-        """Chunks with cosine similarity < MIN_SCORE are not returned."""
-        retriever = _make_retriever(sample_procedures_json)
-        # Zero vector → all dot products = 0, which is below MIN_SCORE=0.25
-        retriever._model.encode.side_effect = [np.zeros(4, dtype=np.float32)]
-
-        results = retriever.retrieve("completely unrelated")
-
-        assert results == []
-
-    def test_respects_top_k(self, sample_procedures_json):
-        """No more than top_k chunks are returned."""
-        retriever = _make_retriever(sample_procedures_json)
-        # High uniform scores: all chunks should be above threshold
-        retriever._model.encode.side_effect = [
-            np.ones(4, dtype=np.float32) / np.sqrt(4)
-        ]
-
-        results = retriever.retrieve("something", top_k=2)
-
-        assert len(results) <= 2
+            # Allow slight fp excess above 1.0 from HNSW cosine distance rounding
+            assert chunk.score < 1.01
 
 
 # ---------------------------------------------------------------------------
-# Singleton
+# Singleton — get_retriever()
 # ---------------------------------------------------------------------------
 
 class TestGetRetriever:
 
-    def test_returns_same_instance_on_repeated_calls(self, sample_procedures_json):
-        """get_retriever() must return the same object (lazy singleton)."""
+    def test_returns_same_instance_on_repeated_calls(
+        self, sample_procedures_json, tmp_path
+    ):
+        """get_retriever() must return the identical object on every call."""
         import src.retriever as retriever_module
 
-        mock_model = MagicMock()
-        mock_model.encode.return_value = np.eye(3, 4, dtype=np.float32)
+        data_file = tmp_path / "procedures.json"
+        data_file.write_text(json.dumps(sample_procedures_json), encoding="utf-8")
+        chroma_dir = tmp_path / "chroma"
 
-        with (
-            patch("src.retriever.DATA_PATH") as mock_path,
-            patch("src.retriever.SentenceTransformer", return_value=mock_model),
-            patch("builtins.open", mock_open(read_data=json.dumps(sample_procedures_json))),
-        ):
-            mock_path.exists.return_value = True
-            # Reset the global singleton so we can test fresh creation
-            retriever_module._retriever_instance = None
+        original_instance = retriever_module._retriever_instance
+        try:
+            with (
+                patch("src.retriever.DATA_PATH", data_file),
+                patch("src.retriever.CHROMA_PATH", chroma_dir),
+                patch("src.retriever.genai.embed_content",
+                      side_effect=_uniform_embed),
+            ):
+                retriever_module._retriever_instance = None
+                r1 = get_retriever()
+                r2 = get_retriever()
 
-            r1 = get_retriever()
-            r2 = get_retriever()
-
-        assert r1 is r2
-        # SentenceTransformer should have been instantiated only once
-        assert mock_model.encode.call_count == 1
+            assert r1 is r2
+        finally:
+            retriever_module._retriever_instance = original_instance
