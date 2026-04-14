@@ -14,7 +14,9 @@ gha-key.json
 *.json.key
 
 # Generated data — built at Docker build time by scraper.py
-procedure_data/procedures.json
+procedure_data/
+# vector db will be created at build time
+chroma_store/
 
 # Test cache and coverage output
 .pytest_cache/

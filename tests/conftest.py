@@ -1,18 +1,46 @@
 """
 Shared pytest fixtures used across unit and integration tests.
+
+Extension 2 changes vs original:
+  - Removed sys.modules mocks for torch and sentence_transformers (no longer
+    a dependency after switching to Google embedding-004).
+  - Added _mock_embed fixture that patches genai.embed_content to return fake
+    numpy-compatible vectors, keeping all tests fully offline.
 """
 
-import sys
-from unittest.mock import MagicMock
-
-# Must be before any src.* imports — prevents torch/sentence_transformers
-# from initialising Apple MPS and triggering Abort trap: 6 on Mac
-sys.modules['torch'] = MagicMock()
-sys.modules['sentence_transformers'] = MagicMock()
-
 import pytest
+import numpy as np
+from unittest.mock import patch, MagicMock
 
 from src.retriever import Chunk
+
+
+# ---------------------------------------------------------------------------
+# Embedding mock
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def mock_embed():
+    """
+    Patches genai.embed_content to return deterministic fake vectors so tests
+    run offline with no Gemini API key required.
+
+    Returns a fake 768-dim embedding for both document and query calls:
+      - list input  (index time) → {"embedding": [[0.1, 0.1, ...], ...]}
+      - str input   (query time) → {"embedding": [0.1, 0.1, ...]}
+
+    The vectors are uniform and L2-normalised so dot-product scores are
+    consistent and above MIN_SCORE=0.25 for retriever tests.
+    """
+    def _fake_embed(model, content, task_type, **kwargs):
+        dim = 768
+        unit = 1.0 / (dim ** 0.5)          # produces a unit-norm vector
+        if isinstance(content, list):
+            return {"embedding": [[unit] * dim for _ in content]}
+        return {"embedding": [unit] * dim}
+
+    with patch("src.retriever.genai.embed_content", side_effect=_fake_embed) as mock:
+        yield mock
 
 
 # ---------------------------------------------------------------------------

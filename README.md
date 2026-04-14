@@ -12,12 +12,15 @@ The system contains three stages:
 Six procedure pages are scraped from i-med.com.au using `requests` and `BeautifulSoup`. Each page is parsed into sections (heading + paragraph pairs) and stored as JSON in `procedure_data/procedures.json`. A 1.5-second delay between requests ensures polite crawling.
 
 **2. Semantic Search Retrieval (`src/retriever.py`)**
-At startup, all scraped sections are split into chunks (one chunk: heading-body pair) and embedded using the `all-MiniLM-L6-v2` sentence-transformer model (~80MB, runs on CPU). Embeddings are held in memory as a numpy array. When a user submits a question, the query is embedded and compared against all stored chunk vectors using cosine similarity. Under this semantic search setup, the top-3 most similar chunks are returned. 
+Each procedure section is sub-chunked using LangChain's `RecursiveCharacterTextSplitter` (chunk size 500, overlap 50) to prevent long bodies from overflowing the embedding token limit. Chunks are embedded with Google's `gemini-embedding-001` model (768-dim, via Gemini API) and stored in a ChromaDB persistent collection (`chroma_store/`) backed by an HNSW index. The index is built once at Docker image build time and reused on every container start. At query time the question is embedded and the top-3 most similar chunks are retrieved by cosine similarity.
 
 **3. Generation (`src/llm.py`)**
-The retrieved chunks are assembled into a prompt alongside the user's question and sent to a local `llama3.2:3b` model running via Ollama. The prompt explicitly instructs the model to answer only from the provided context. The response is returned with source citations (procedure title, URL, section heading).
+The retrieved chunks are assembled into a prompt alongside the user's question and sent to the Gemini API (`gemini-2.0-flash`). The prompt explicitly instructs the model to answer only from the provided context. The response is returned with source citations (procedure title, URL, section heading).
 
-**Design reference:** Structure inspired by [umbertogriffo/rag-chatbot](https://github.com/umbertogriffo/rag-chatbot), simplified to remove vector DB and multi-turn chat history dependencies, keeping only what is necessary for a single-turn grounded Q&A API.
+**4. Evaluation (`src/evaluate.py`)**
+A fixed evaluation set is run through the full pipeline and scored with three reference-free [RAGAS](https://docs.ragas.io) metrics — Faithfulness, Answer Relevancy, and Context Precision — using `gemini-1.5-flash` as the evaluator LLM. Results are logged to a local [MLflow](https://mlflow.org) tracking store (`mlruns/`) for run-over-run comparison.
+
+**Design reference:** Structure inspired by [umbertogriffo/rag-chatbot](https://github.com/umbertogriffo/rag-chatbot), simplified to single-turn grounded Q&A with a persistent ChromaDB vector store.
 
 ---
 
@@ -27,37 +30,51 @@ The retrieved chunks are assembled into a prompt alongside the user's question a
 ### Prerequisites
 
 - Python 3.9+
-- [Ollama](https://ollama.com/) installed on your machine
+- A Gemini API key — get one free at [aistudio.google.com](https://aistudio.google.com)
+
+```bash
+export GEMINI_API_KEY=your_key_here
 ```
-**Mac:** Download and install from https://ollama.com/download
-**Linux:** curl -fsSL https://ollama.com/install.sh | sh
-```
-After installing, make sure Ollama is running: `ollama serve`
 
 ### One-command setup
-```
+```bash
 chmod +x run.sh   # run once on setup
-./run.sh    
+./run.sh
 ```
 
 `run.sh` will:
-1. Create and activate a Python virtual environment
-2. Install all dependencies from `requirements.txt`
-3. Pull the `llama3.2:3b` model via Ollama (one-time ~2GB download)
+1. Check `GEMINI_API_KEY` is set
+2. Create and activate a Python virtual environment
+3. Install all dependencies from `requirements.txt`
 4. Run the scraper to build `procedure_data/procedures.json`
 5. Start the FastAPI server at `http://0.0.0.0:8000`
+
+The ChromaDB vector index (`chroma_store/`) is built automatically on first run and reused on subsequent starts.
 
 ### Test the API
 `POST  ->  Try it out  ->  Edit question string and execute`
 
 
-### Docker 
+### Docker
 
+The Gemini API key is passed as a [BuildKit secret](https://docs.docker.com/build/secrets/) — it is used only during the index-build step and is never written into any image layer.
+
+```bash
+export GEMINI_API_KEY=your_key_here
+docker build --secret id=gemini_key,env=GEMINI_API_KEY -t imed-chatbot .
+docker run -e GEMINI_API_KEY=$GEMINI_API_KEY -p 8000:8000 imed-chatbot
 ```
-docker build -t imed-chatbot .
-docker run -p 8000:8000 imed-chatbot
+Then try the API at `http://0.0.0.0:8000`.
+
+### Evaluation (optional)
+
+Runs the full pipeline against a fixed question set and logs [RAGAS](https://docs.ragas.io) scores to a local MLflow store.
+
+```bash
+pip install -r requirements-eval.txt
+python src/evaluate.py
+mlflow ui --backend-store-uri mlruns   # view results at http://localhost:5000
 ```
-Then try the API at: `http://0.0.0.0:8000 `.
 
 ### GCP Cloud Run
 ```

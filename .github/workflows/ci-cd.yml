@@ -69,10 +69,15 @@ jobs:
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
       # Build the Docker image, tagged with the git commit SHA for traceability
-      # (so you can always roll back to an exact commit)
+      # (so you can always roll back to an exact commit).
+      # GEMINI_API_KEY is passed as a BuildKit secret so it is never written into
+      # any image layer — it is used only during the chroma_store build step.
       - name: Build Docker image
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           docker build \
+            --secret id=gemini_key,env=GEMINI_API_KEY \
             -t ${{ env.IMAGE }}:${{ github.sha }} \
             -t ${{ env.IMAGE }}:latest \
             .
