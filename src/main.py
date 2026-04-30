@@ -1,7 +1,6 @@
 # Define scripts as a web service using FastAPI
 
 import json
-import logging
 import time
 from typing import List, Optional
 from fastapi import FastAPI, HTTPException
@@ -11,7 +10,6 @@ from pydantic import BaseModel
 from src.llm import ask, BotResponse
 
 app = FastAPI(title="I-MED Procedure Assistant")
-logger = logging.getLogger(__name__)
 
 ### 1. Define pydantic dataclasses to validate
 class QueryRequest(BaseModel):
@@ -56,12 +54,12 @@ def ask_question(request: QueryRequest):
     result = ask(request.question)
     latency_ms = round((time.perf_counter() - t0) * 1000, 1)
 
-    logger.info(json.dumps({
+    print(json.dumps({
         "event": "ask",
         "latency_ms": latency_ms,
         "sources_returned": len(result.sources),
         "error": result.error,
-    }))
+    }), flush=True)
 
     # Surface Gemini-level failures as 503 so the caller knows to retry
     if result.error and "gemini" in result.error:
