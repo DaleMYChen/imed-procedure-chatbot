@@ -2,6 +2,15 @@
 # Install separately when running src/evaluate.py:
 #   pip install -r requirements-eval.txt
 
-ragas>=0.2.0
-mlflow>=2.0.0
-langchain-google-genai>=2.0.0
+# # ragas 0.4.x requires pyarrow>=21 which has no wheel for Python 3.9 and conflicts with mlflow<21
+# ragas==0.3.9
+# mlflow>=2.0.0
+# langchain-google-genai>=2.0.0
+# # pyarrow 14.x has a pre-built wheel for Python 3.9 on macOS and satisfies mlflow's <21 constraint
+# pyarrow==14.0.2
+
+ragas
+mlflow
+langchain-google-genai
+# pyarrow 14.x has a pre-built wheel for Python 3.9 on macOS and satisfies mlflow's <21 constraint
+pyarrow
